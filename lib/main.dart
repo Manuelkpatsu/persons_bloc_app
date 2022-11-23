@@ -1,4 +1,13 @@
+import 'dart:convert';
+import 'dart:io';
+import 'dart:developer' as devtools show log;
+
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+
+extension Log on Object {
+  void log() => devtools.log(toString());
+}
 
 void main() {
   runApp(const MyApp());
@@ -7,109 +16,177 @@ void main() {
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      debugShowCheckedModeBanner: false,
       title: 'Flutter Demo',
       theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // Try running your application with "flutter run". You'll see the
-        // application has a blue toolbar. Then, without quitting the app, try
-        // changing the primarySwatch below to Colors.green and then invoke
-        // "hot reload" (press "r" in the console where you ran "flutter run",
-        // or simply save your changes to "hot reload" in a Flutter IDE).
-        // Notice that the counter didn't reset back to zero; the application
-        // is not restarted.
         primarySwatch: Colors.blue,
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      home: BlocProvider(
+        create: (_) => PersonsBloc(),
+        child: const MyHomePage(),
+      ),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
-
-  @override
-  State<MyHomePage> createState() => _MyHomePageState();
+@immutable
+abstract class LoadAction {
+  const LoadAction();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+@immutable
+class LoadPersonsAction implements LoadAction {
+  final PersonUrl url;
 
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
-    });
+  const LoadPersonsAction({required this.url}) : super();
+}
+
+enum PersonUrl {
+  persons1,
+  persons2,
+}
+
+extension UrlString on PersonUrl {
+  String get urlString {
+    switch (this) {
+      case PersonUrl.persons1:
+        return 'http://127.0.0.1:5500/api/person1.json';
+      case PersonUrl.persons2:
+        return 'http://127.0.0.1:5500/api/person2.json';
+    }
   }
+}
+
+@immutable
+class Person {
+  final String name;
+  final int age;
+
+  const Person({required this.name, required this.age});
+
+  Person.fromJson(Map<String, dynamic> json)
+      : name = json['name'] as String,
+        age = json['age'] as int;
 
   @override
+  String toString() => 'Person (name = $name, age = $age)';
+}
+
+Future<Iterable<Person>> getPersons(String url) => HttpClient()
+    .getUrl(Uri.parse(url))
+    .then((req) => req.close())
+    .then((res) => res.transform(utf8.decoder).join())
+    .then((str) => json.decode(str) as List<dynamic>)
+    .then((list) => list.map((e) => Person.fromJson(e)));
+
+@immutable
+class FetchResult {
+  final Iterable<Person> persons;
+  final bool isRetrievedFromCache;
+
+  const FetchResult({
+    required this.persons,
+    required this.isRetrievedFromCache,
+  });
+
+  @override
+  String toString() =>
+      "FetchResult (isRetrievedFromCache = $isRetrievedFromCache, persons = $persons)";
+}
+
+class PersonsBloc extends Bloc<LoadAction, FetchResult?> {
+  final Map<PersonUrl, Iterable<Person>> _cache = {};
+
+  PersonsBloc() : super(null) {
+    on<LoadPersonsAction>(
+      (event, emit) async {
+        final url = event.url;
+        if (_cache.containsKey(url)) {
+          // we have the value in the cache
+          final cachedPersons = _cache[url]!;
+          final result = FetchResult(
+            persons: cachedPersons,
+            isRetrievedFromCache: true,
+          );
+          emit(result);
+        } else {
+          final persons = await getPersons(url.urlString);
+          _cache[url] = persons;
+          final result = FetchResult(
+            persons: persons,
+            isRetrievedFromCache: true,
+          );
+          emit(result);
+        }
+      },
+    );
+  }
+}
+
+extension Subscript<T> on Iterable<T> {
+  T? operator [](int index) => length > index ? elementAt(index) : null;
+}
+
+class MyHomePage extends StatelessWidget {
+  const MyHomePage({super.key});
+  @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
     return Scaffold(
-      appBar: AppBar(
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
+      appBar: AppBar(title: const Text("Home Page")),
+      body: Column(
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              TextButton(
+                onPressed: () {
+                  context
+                      .read<PersonsBloc>()
+                      .add(const LoadPersonsAction(url: PersonUrl.persons1));
+                },
+                child: const Text('Load json #1'),
+              ),
+              TextButton(
+                onPressed: () {
+                  context
+                      .read<PersonsBloc>()
+                      .add(const LoadPersonsAction(url: PersonUrl.persons2));
+                },
+                child: const Text('Load json #2'),
+              )
+            ],
+          ),
+          BlocBuilder<PersonsBloc, FetchResult?>(
+            buildWhen: (previousResult, currentResult) {
+              return previousResult?.persons != currentResult?.persons;
+            },
+            builder: (context, fetchResult) {
+              fetchResult?.log();
+              final persons = fetchResult?.persons;
+
+              if (persons == null) {
+                return const SizedBox.shrink();
+              }
+              return Expanded(
+                child: ListView.builder(
+                  itemCount: persons.length,
+                  itemBuilder: (context, index) {
+                    final person = persons[index]!;
+
+                    return ListTile(
+                      title: Text(person.name),
+                    );
+                  },
+                ),
+              );
+            },
+          ),
+        ],
       ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Invoke "debug painting" (press "p" in the console, choose the
-          // "Toggle Debug Paint" action from the Flutter Inspector in Android
-          // Studio, or the "Toggle Debug Paint" command in Visual Studio Code)
-          // to see the wireframe for each widget.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Text(
-              'You have pushed the button this many times:',
-            ),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headline4,
-            ),
-          ],
-        ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
     );
   }
 }
